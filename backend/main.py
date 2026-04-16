@@ -192,7 +192,8 @@ async def upload_and_process(
     file: UploadFile = File(...),
     category_ids: str = Form(default=""),
 ):
-    """Upload an audio file, transcribe and analyze."""
+    """Upload an audio file, transcribe and analyze. Runs in thread to not block."""
+    import asyncio
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
@@ -201,19 +202,22 @@ async def upload_and_process(
 
     try:
         categories = _get_category_names(cat_ids if cat_ids else None)
-        return _process_and_save(file.filename, audio_bytes, categories)
+        result = await asyncio.to_thread(_process_and_save, file.filename, audio_bytes, categories)
+        return result
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, f"Processing error: {str(e)}")
 
 
-# ---- Batch (Volume) Processing with SSE ----
+# ---- Batch (Volume) Processing with SSE (non-blocking) ----
 
 @app.post("/api/audio/batch")
 async def process_batch_sse(req: BatchRequest):
-    """Process audio files with real-time status updates via SSE."""
+    """Process audio files with real-time SSE updates. Runs heavy work in threads."""
+    import asyncio
     from databricks.sdk import WorkspaceClient
     from starlette.responses import StreamingResponse
+    from .ai_service import convert_to_wav
 
     try:
         w = WorkspaceClient()
@@ -232,96 +236,107 @@ async def process_batch_sse(req: BatchRequest):
         f for f in files
         if f.path and ("." + f.path.rsplit(".", 1)[-1].lower() if "." in f.path else "") in audio_extensions
     ]
-
     if req.selected_files:
         selected_set = set(req.selected_files)
         audio_files = [f for f in audio_files if f.path.rsplit("/", 1)[-1] in selected_set]
-
     if not audio_files:
         raise HTTPException(400, "No audio files found")
 
-    def _sse(data):
-        return f"data: {json.dumps(data, default=str)}\n\n"
+    event_queue = asyncio.Queue()
+
+    def _process_file(f, idx, total):
+        """Run in thread — does all heavy I/O and CPU work."""
+        file_name = f.path.rsplit("/", 1)[-1]
+        try:
+            event_queue.put_nowait({"type": "status", "file": file_name, "index": idx, "total": total,
+                                    "stage": "downloading", "message": f"Baixando {file_name}..."})
+            resp = w.files.download(f.path)
+            audio_bytes = resp.contents.read()
+
+            ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+            if ext != "wav" and audio_bytes[:4] != b'RIFF':
+                event_queue.put_nowait({"type": "status", "file": file_name, "index": idx, "total": total,
+                                        "stage": "converting", "message": f"Convertendo {ext.upper()} para WAV..."})
+                audio_bytes, _ = convert_to_wav(audio_bytes, file_name)
+
+            event_queue.put_nowait({"type": "status", "file": file_name, "index": idx, "total": total,
+                                    "stage": "transcribing", "message": f"Transcrevendo {file_name}..."})
+            transcript_result = transcribe_audio(audio_bytes, file_name)
+            transcription = transcript_result["text"]
+
+            event_queue.put_nowait({"type": "status", "file": file_name, "index": idx, "total": total,
+                                    "stage": "analyzing", "message": f"Analisando sentimento e categorias..."})
+            analysis = analyze_transcription(transcription, categories)
+
+            event_queue.put_nowait({"type": "status", "file": file_name, "index": idx, "total": total,
+                                    "stage": "saving", "message": f"Salvando resultados..."})
+            category_id = None
+            with get_cursor() as cur:
+                cur.execute("SELECT id FROM categories WHERE name = %s", (analysis.get("category", ""),))
+                row = cur.fetchone()
+                if row:
+                    category_id = row["id"]
+            with get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO audio_analyses
+                    (file_name, file_path, file_size, transcription, summary, category_id,
+                     sentiment, sentiment_score, key_topics, urgency_level,
+                     language_detected, speaker_count, action_items, processed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *""",
+                    (file_name, f.path, len(audio_bytes),
+                     transcription, analysis.get("summary", ""), category_id,
+                     analysis.get("sentiment", "neutral"), analysis.get("sentiment_score", 0.5),
+                     analysis.get("key_topics", []), analysis.get("urgency_level", "normal"),
+                     analysis.get("language_detected", "pt"), analysis.get("speaker_count", 1),
+                     analysis.get("action_items", []), datetime.datetime.now()),
+                )
+                saved = cur.fetchone()
+
+            result_data = {**_serialize_row(saved), "category_name": analysis.get("category", "")}
+            event_queue.put_nowait({"type": "completed", "file": file_name, "index": idx, "total": total,
+                                    "result": result_data})
+            return True
+        except Exception as e:
+            traceback.print_exc()
+            event_queue.put_nowait({"type": "error", "file": file_name, "index": idx, "total": total,
+                                    "error": str(e)})
+            return False
+
+    async def run_batch():
+        """Run all files sequentially in a background thread."""
+        total = len(audio_files)
+        ok, fail = 0, 0
+        for idx, f in enumerate(audio_files):
+            success = await asyncio.to_thread(_process_file, f, idx, total)
+            if success:
+                ok += 1
+            else:
+                fail += 1
+        event_queue.put_nowait({"type": "done", "processed": ok, "errors": fail})
 
     async def event_stream():
-        total = len(audio_files)
-        results = []
-        errors = []
+        # Start processing in background task
+        task = asyncio.create_task(run_batch())
 
-        # Send queue info
-        queue = [f.path.rsplit("/", 1)[-1] for f in audio_files]
-        yield _sse({"type": "queue", "files": queue, "total": total})
-
-        for idx, f in enumerate(audio_files):
-            file_name = f.path.rsplit("/", 1)[-1]
-
+        # Stream events as they arrive
+        while True:
             try:
-                # Stage 1: downloading
-                yield _sse({"type": "status", "file": file_name, "index": idx, "total": total,
-                            "stage": "downloading", "message": f"Baixando {file_name}..."})
-                resp = w.files.download(f.path)
-                audio_bytes = resp.contents.read()
-
-                # Stage 2: converting (if not WAV)
-                ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-                if ext != "wav" and audio_bytes[:4] != b'RIFF':
-                    yield _sse({"type": "status", "file": file_name, "index": idx, "total": total,
-                                "stage": "converting", "message": f"Convertendo {ext.upper()} para WAV..."})
-                    from .ai_service import convert_to_wav
-                    audio_bytes, _ = convert_to_wav(audio_bytes, file_name)
-
-                # Stage 3: transcribing
-                yield _sse({"type": "status", "file": file_name, "index": idx, "total": total,
-                            "stage": "transcribing", "message": f"Transcrevendo {file_name}..."})
-                transcript_result = transcribe_audio(audio_bytes, file_name)
-                transcription = transcript_result["text"]
-
-                # Stage 3: analyzing
-                yield _sse({"type": "status", "file": file_name, "index": idx, "total": total,
-                            "stage": "analyzing", "message": f"Analisando sentimento e categorias..."})
-                analysis = analyze_transcription(transcription, categories)
-
-                # Stage 4: saving
-                yield _sse({"type": "status", "file": file_name, "index": idx, "total": total,
-                            "stage": "saving", "message": f"Salvando resultados..."})
-
-                category_id = None
-                with get_cursor() as cur:
-                    cur.execute("SELECT id FROM categories WHERE name = %s", (analysis.get("category", ""),))
-                    row = cur.fetchone()
-                    if row:
-                        category_id = row["id"]
-
-                with get_cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO audio_analyses
-                        (file_name, file_path, file_size, transcription, summary, category_id,
-                         sentiment, sentiment_score, key_topics, urgency_level,
-                         language_detected, speaker_count, action_items, processed_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING *""",
-                        (file_name, f.path, len(audio_bytes),
-                         transcription, analysis.get("summary", ""), category_id,
-                         analysis.get("sentiment", "neutral"), analysis.get("sentiment_score", 0.5),
-                         analysis.get("key_topics", []), analysis.get("urgency_level", "normal"),
-                         analysis.get("language_detected", "pt"), analysis.get("speaker_count", 1),
-                         analysis.get("action_items", []), datetime.datetime.now()),
-                    )
-                    saved = cur.fetchone()
-
-                result_data = {**_serialize_row(saved), "category_name": analysis.get("category", "")}
-                results.append(result_data)
-
-                yield _sse({"type": "completed", "file": file_name, "index": idx, "total": total,
-                            "result": result_data})
-
-            except Exception as e:
-                traceback.print_exc()
-                errors.append({"file": file_name, "error": str(e)})
-                yield _sse({"type": "error", "file": file_name, "index": idx, "total": total,
-                            "error": str(e)})
-
-        yield _sse({"type": "done", "processed": len(results), "errors": len(errors)})
+                event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                if event.get("type") == "done":
+                    break
+            except asyncio.TimeoutError:
+                # Send keepalive so connection doesn't drop
+                yield ": keepalive\n\n"
+                if task.done():
+                    # Drain remaining events
+                    while not event_queue.empty():
+                        event = event_queue.get_nowait()
+                        yield f"data: {json.dumps(event, default=str)}\n\n"
+                        if event.get("type") == "done":
+                            return
+                    break
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
