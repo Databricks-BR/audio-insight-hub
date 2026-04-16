@@ -44,8 +44,8 @@ export function useApi() {
   };
 
   const listVolumeFiles = (path) => apiFetch(`/volume/list?path=${encodeURIComponent(path)}`);
-  const processBatch = (volumePath, categoryIds) =>
-    apiFetch('/audio/batch', { method: 'POST', body: JSON.stringify({ volume_path: volumePath, category_ids: categoryIds || [] }) });
+  const processBatch = (volumePath, categoryIds, selectedFiles) =>
+    apiFetch('/audio/batch', { method: 'POST', body: JSON.stringify({ volume_path: volumePath, category_ids: categoryIds || [], selected_files: selectedFiles || [] }) });
   const getAudioStreamUrl = (path) => `${BASE}/audio/stream?path=${encodeURIComponent(path)}`;
 
   const fetchAnalyses = (params = {}) => {

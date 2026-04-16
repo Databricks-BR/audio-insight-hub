@@ -57,6 +57,7 @@ class SettingUpdate(BaseModel):
 class BatchRequest(BaseModel):
     volume_path: str
     category_ids: list[int] = []
+    selected_files: list[str] = []  # if empty, process all
 
 
 # ---- Health ----
@@ -235,6 +236,14 @@ async def process_batch(req: BatchRequest):
 
     if not audio_files:
         raise HTTPException(404, "No audio files found in this volume path")
+
+    # Filter to selected files only
+    if req.selected_files:
+        selected_set = set(req.selected_files)
+        audio_files = [f for f in audio_files if f.path.rsplit("/", 1)[-1] in selected_set]
+
+    if not audio_files:
+        raise HTTPException(400, "No selected audio files found")
 
     for f in audio_files:
         file_name = f.path.rsplit("/", 1)[-1]

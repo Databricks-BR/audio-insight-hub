@@ -36,6 +36,8 @@ export default function ProcessPage({ onNavigate }) {
   const [processing, setProcessing] = useState(false)
   const [batchResults, setBatchResults] = useState(null)
   const [playingPath, setPlayingPath] = useState(null)
+  const [selectedFiles, setSelectedFiles] = useState(new Set())
+  const [fileSearch, setFileSearch] = useState('')
 
   // Audio player
   const audioRef = useRef(null)
@@ -99,10 +101,11 @@ export default function ProcessPage({ onNavigate }) {
   // ---- Batch handlers ----
   const loadVolumeFiles = async () => {
     if (!volumePath.trim()) return
-    setLoadingFiles(true); setVolumeFiles(null)
+    setLoadingFiles(true); setVolumeFiles(null); setSelectedFiles(new Set()); setFileSearch('')
     try {
       const data = await api.listVolumeFiles(volumePath.trim())
       setVolumeFiles(data)
+      setSelectedFiles(new Set(data.files.map(f => f.name)))
     } catch (err) {
       toast.error(err.message)
     } finally {
@@ -110,11 +113,46 @@ export default function ProcessPage({ onNavigate }) {
     }
   }
 
+  const toggleFile = (name) => {
+    setSelectedFiles(prev => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name); else next.add(name)
+      return next
+    })
+  }
+
+  const toggleAllFiles = () => {
+    if (!volumeFiles) return
+    const filtered = filteredVolumeFiles()
+    if (filtered.every(f => selectedFiles.has(f.name))) {
+      setSelectedFiles(prev => {
+        const next = new Set(prev)
+        filtered.forEach(f => next.delete(f.name))
+        return next
+      })
+    } else {
+      setSelectedFiles(prev => {
+        const next = new Set(prev)
+        filtered.forEach(f => next.add(f.name))
+        return next
+      })
+    }
+  }
+
+  const filteredVolumeFiles = () => {
+    if (!volumeFiles) return []
+    if (!fileSearch.trim()) return volumeFiles.files
+    const q = fileSearch.toLowerCase()
+    return volumeFiles.files.filter(f => f.name.toLowerCase().includes(q))
+  }
+
   const processBatch = async () => {
-    if (!volumePath.trim()) return
+    if (!volumePath.trim() || selectedFiles.size === 0) {
+      toast.error('Selecione pelo menos um audio'); return
+    }
     setProcessing(true); setBatchResults(null)
     try {
-      const data = await api.processBatch(volumePath.trim(), selectedCats)
+      const data = await api.processBatch(volumePath.trim(), selectedCats, [...selectedFiles])
       setBatchResults(data)
       toast.success(`${data.processed} audios processados!`)
     } catch (err) {
@@ -401,45 +439,68 @@ export default function ProcessPage({ onNavigate }) {
           {/* Volume file list with player */}
           {volumeFiles && (
             <div className="glass-card p-5 space-y-3 animate-[fadeIn_0.2s_ease-out]">
-              <div className="flex items-center justify-between">
+              {/* Header: count + search + select all */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="flex items-center gap-2">
                   <Headphones className="w-4 h-4 text-brand-500" />
                   <span className="font-semibold text-sm text-gray-700 dark:text-gray-300">
-                    {volumeFiles.total} audios encontrados
+                    {selectedFiles.size}/{volumeFiles.total} selecionados
                   </span>
                 </div>
+                <div className="flex-1 relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input type="text" value={fileSearch} onChange={(e) => setFileSearch(e.target.value)}
+                    placeholder="Buscar audio..." className="input-field !py-2 pl-9 text-sm" />
+                </div>
+                <button onClick={toggleAllFiles}
+                  className="btn-secondary !py-2 !px-3 text-xs whitespace-nowrap">
+                  {filteredVolumeFiles().every(f => selectedFiles.has(f.name)) ? 'Desmarcar' : 'Selecionar'} todos
+                </button>
               </div>
 
               <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                {volumeFiles.files.map((f, i) => (
-                  <div key={i} className={`flex items-center gap-3 p-3 rounded-xl transition-all cursor-pointer
-                    ${playingPath === f.path
-                      ? 'bg-brand-50 dark:bg-brand-500/10 ring-1 ring-brand-500/30'
-                      : 'bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                    onClick={() => playVolumeAudio(f.path)}>
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all
-                      ${playingPath === f.path ? 'gradient-bg text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500'}`}>
-                      {playingPath === f.path && isPlaying
-                        ? <Pause className="w-3.5 h-3.5" />
-                        : <Play className="w-3.5 h-3.5 ml-0.5" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{f.name}</p>
-                      {f.size && <p className="text-xs text-gray-400">{(f.size / 1024).toFixed(0)} KB</p>}
-                    </div>
-                    {playingPath === f.path && (
-                      <div className="flex gap-0.5">
-                        {[...Array(4)].map((_, j) => (
-                          <div key={j} className="w-1 bg-brand-500 rounded-full wave-animation"
-                            style={{ height: `${8 + Math.random() * 12}px`, animationDelay: `${j * 0.15}s` }} />
-                        ))}
+                {filteredVolumeFiles().map((f, i) => {
+                  const checked = selectedFiles.has(f.name)
+                  return (
+                    <div key={i} className={`flex items-center gap-3 p-3 rounded-xl transition-all
+                      ${playingPath === f.path
+                        ? 'bg-brand-50 dark:bg-brand-500/10 ring-1 ring-brand-500/30'
+                        : checked ? 'bg-gray-50 dark:bg-gray-800/50' : 'bg-gray-50/50 dark:bg-gray-800/30 opacity-60'}`}>
+                      {/* Checkbox */}
+                      <button onClick={() => toggleFile(f.name)}
+                        className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all
+                          ${checked ? 'bg-brand-500 border-brand-500 text-white' : 'border-gray-300 dark:border-gray-600'}`}>
+                        {checked && <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                      </button>
+
+                      {/* Play button */}
+                      <button onClick={() => playVolumeAudio(f.path)}
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all flex-shrink-0
+                          ${playingPath === f.path ? 'gradient-bg text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 hover:bg-gray-300'}`}>
+                        {playingPath === f.path && isPlaying
+                          ? <Pause className="w-3.5 h-3.5" />
+                          : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                      </button>
+
+                      <div className="flex-1 min-w-0 cursor-pointer" onClick={() => toggleFile(f.name)}>
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate">{f.name}</p>
+                        {f.size && <p className="text-xs text-gray-400">{(f.size / 1024).toFixed(0)} KB</p>}
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      {playingPath === f.path && (
+                        <div className="flex gap-0.5">
+                          {[...Array(4)].map((_, j) => (
+                            <div key={j} className="w-1 bg-brand-500 rounded-full wave-animation"
+                              style={{ height: `${8 + Math.random() * 12}px`, animationDelay: `${j * 0.15}s` }} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
-              {/* Player bar for volume audio */}
+              {/* Player bar */}
               {playingPath && (
                 <div className="pt-3 border-t border-gray-200 dark:border-gray-800">
                   <div className="flex items-center gap-3">
@@ -460,13 +521,13 @@ export default function ProcessPage({ onNavigate }) {
                 </div>
               )}
 
-              {/* Process batch button */}
-              <button onClick={processBatch} disabled={processing}
+              {/* Process button */}
+              <button onClick={processBatch} disabled={processing || selectedFiles.size === 0}
                 className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-50">
                 {processing ? (
                   <><Loader2 className="w-5 h-5 animate-spin" />{t('volume.processing')}</>
                 ) : (
-                  <><Sparkles className="w-5 h-5" />Processar {volumeFiles.total} audios com IA</>
+                  <><Sparkles className="w-5 h-5" />Processar {selectedFiles.size} audio{selectedFiles.size !== 1 ? 's' : ''} com IA</>
                 )}
               </button>
             </div>
