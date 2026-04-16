@@ -2,7 +2,6 @@ import os
 import json
 import base64
 import httpx
-from openai import OpenAI
 
 
 def _get_host():
@@ -18,7 +17,6 @@ def _get_token():
     if token:
         return token
 
-    # OAuth M2M flow for Databricks Apps
     client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
     client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
     host = _get_host()
@@ -35,61 +33,83 @@ def _get_token():
             return resp.json()["access_token"]
         except Exception as e:
             print(f"OAuth token error: {e}")
-
     return ""
 
 
-def get_openai_client():
-    """Get OpenAI-compatible client pointing to Databricks Foundation Model API."""
+def _call_anthropic(messages: list, max_tokens: int = 4096, temperature: float = 0.1) -> str:
+    """Call Claude via Databricks FMAPI using Anthropic native format (supports audio)."""
     host = _get_host()
     token = _get_token()
-    return OpenAI(
-        api_key=token,
-        base_url=f"{host}/serving-endpoints",
+
+    # Use the Anthropic-compatible endpoint on Databricks
+    url = f"{host}/serving-endpoints/databricks-claude-sonnet-4-6/invocations"
+
+    payload = {
+        "anthropic_version": "2023-06-01",
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": messages,
+    }
+
+    resp = httpx.post(
+        url,
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=180,
     )
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Anthropic format: content is a list of blocks
+    content = data.get("content", [])
+    text_parts = [block["text"] for block in content if block.get("type") == "text"]
+    return "\n".join(text_parts)
 
 
 def transcribe_audio(audio_bytes: bytes, file_name: str) -> dict:
-    """Transcribe audio using Databricks Foundation Model API (Claude)."""
+    """Transcribe audio using Claude via Anthropic native API (supports audio input)."""
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
     ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "wav"
+    mime_map = {
+        "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+        "flac": "audio/flac", "m4a": "audio/mp4", "webm": "audio/webm",
+    }
+    media_type = mime_map.get(ext, "audio/mpeg")
 
-    client = get_openai_client()
-    response = client.chat.completions.create(
-        model="databricks-claude-sonnet-4",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": audio_b64,
-                            "format": ext if ext in ["wav", "mp3"] else "wav",
-                        },
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "media",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": audio_b64,
                     },
-                    {
-                        "type": "text",
-                        "text": (
-                            "Please transcribe this audio recording word-for-word. "
-                            "Include speaker changes if detectable. "
-                            "Output ONLY the transcription text, no extra commentary."
-                        ),
-                    },
-                ],
-            }
-        ],
-        max_tokens=4096,
-    )
-    transcription = response.choices[0].message.content
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Transcreva este audio palavra por palavra em portugues. "
+                        "Inclua mudancas de falante se detectavel. "
+                        "Retorne APENAS o texto da transcricao, sem comentarios extras."
+                    ),
+                },
+            ],
+        }
+    ]
+
+    transcription = _call_anthropic(messages, max_tokens=4096, temperature=0.0)
     return {"text": transcription}
 
 
 def analyze_transcription(transcription: str, categories: list[str]) -> dict:
     """Analyze transcription for summary, sentiment, category, topics, action items."""
-    client = get_openai_client()
-
     categories_str = ", ".join(categories)
     prompt = f"""Analyze the following customer service call transcription and provide a structured analysis.
 
@@ -113,14 +133,13 @@ Respond ONLY with a valid JSON object (no markdown, no code blocks) with these e
     "action_items": ["action1", "action2"]
 }}"""
 
-    response = client.chat.completions.create(
-        model="databricks-claude-sonnet-4",
-        messages=[{"role": "user", "content": prompt}],
+    text = _call_anthropic(
+        [{"role": "user", "content": prompt}],
         max_tokens=2048,
         temperature=0.1,
     )
 
-    text = response.choices[0].message.content.strip()
+    text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(text)
@@ -128,8 +147,6 @@ Respond ONLY with a valid JSON object (no markdown, no code blocks) with these e
 
 def generate_detailed_report(transcription: str, summary: str, category: str) -> str:
     """Generate a detailed narrative report for PDF export."""
-    client = get_openai_client()
-
     prompt = f"""Based on this customer service call analysis, write a professional detailed report in Portuguese (Brazil).
 
 Category: {category}
@@ -146,10 +163,8 @@ Write a structured report with these sections:
 
 Be professional and concise. Use bullet points where appropriate."""
 
-    response = client.chat.completions.create(
-        model="databricks-claude-sonnet-4",
-        messages=[{"role": "user", "content": prompt}],
+    return _call_anthropic(
+        [{"role": "user", "content": prompt}],
         max_tokens=3000,
         temperature=0.3,
     )
-    return response.choices[0].message.content

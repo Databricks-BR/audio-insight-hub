@@ -19,7 +19,7 @@ env:
 resources:
   - name: audio-insight-serving-endpoint
     serving_endpoint:
-      name: databricks-claude-sonnet-4
+      name: databricks-claude-sonnet-4-6
       permission: CAN_QUERY
   - name: audio-insight-sql-warehouse
     sql_warehouse:
