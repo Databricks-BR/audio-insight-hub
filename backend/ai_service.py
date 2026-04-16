@@ -118,11 +118,11 @@ def _pcm_to_wav(pcm_data: bytes) -> bytes:
 
 
 def transcribe_audio(audio_bytes: bytes, file_name: str) -> dict:
-    """Transcribe audio using Google Speech Recognition.
+    """Transcribe audio using Gemini 2.5 Flash via Databricks FMAPI.
 
-    Auto-converts any format to WAV using miniaudio (no ffmpeg).
+    Gemini accepts audio via image_url data URI. Auto-converts to WAV first.
     """
-    recognizer = sr.Recognizer()
+    import base64
 
     # Convert to WAV if needed
     if audio_bytes[:4] != b'RIFF':
@@ -133,38 +133,37 @@ def transcribe_audio(audio_bytes: bytes, file_name: str) -> dict:
             print(f"Conversion failed for {file_name}: {e}")
             return {"text": f"[Erro na conversao: {file_name} - {e}]"}
 
-    # Read WAV
-    try:
-        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
-            total_duration = source.DURATION
-    except Exception as e:
-        print(f"Cannot read WAV {file_name}: {e}")
-        return {"text": f"[Erro ao ler audio: {file_name}]"}
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # Transcribe in chunks
-    chunk_seconds = 55
-    parts = []
-    offset = 0
+    host = _get_host()
+    token = _get_token()
 
-    while offset < total_duration:
-        dur = min(chunk_seconds, total_duration - offset)
-        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
-            audio_data = recognizer.record(source, offset=offset, duration=dur)
-        try:
-            text = recognizer.recognize_google(audio_data, language="pt-BR")
-            parts.append(text)
-        except sr.UnknownValueError:
-            pass
-        except sr.RequestError as e:
-            print(f"Google STT error: {e}")
-            parts.append("[erro de transcricao]")
-        offset += chunk_seconds
+    resp = httpx.post(
+        f"{host}/serving-endpoints/databricks-gemini-2-5-flash/invocations",
+        json={
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
+                {"type": "text", "text": (
+                    "Transcreva este audio palavra por palavra em portugues brasileiro. "
+                    "Inclua mudancas de falante se detectavel. "
+                    "Retorne APENAS o texto da transcricao, sem comentarios extras."
+                )},
+            ]}],
+            "max_tokens": 4096,
+        },
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=180,
+    )
+    if resp.status_code != 200:
+        print(f"Gemini transcription error {resp.status_code}: {resp.text[:300]}")
+        return {"text": f"[Erro na transcricao: {resp.status_code}]"}
 
-    full_text = " ".join(parts)
-    if not full_text.strip():
+    data = resp.json()
+    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not text.strip():
         return {"text": f"[Audio sem fala reconhecida: {file_name}]"}
 
-    return {"text": full_text}
+    return {"text": text}
 
 
 def analyze_transcription(transcription: str, categories: list[str]) -> dict:

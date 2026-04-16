@@ -17,6 +17,10 @@ resources:
     serving_endpoint:
       name: databricks-claude-sonnet-4-6
       permission: CAN_QUERY
+  - name: audio-insight-gemini
+    serving_endpoint:
+      name: databricks-gemini-2-5-flash
+      permission: CAN_QUERY
   - name: audio-insight-sql-warehouse
     sql_warehouse:
       name: Serverless Starter Warehouse
