@@ -148,37 +148,31 @@ export default function ProcessPage({ onNavigate }) {
     return volumeFiles.files.filter(f => f.name.toLowerCase().includes(q))
   }
 
-  const processBatch = async () => {
+  const processBatch = () => {
     if (!volumePath.trim() || selectedFiles.size === 0) {
       toast.error('Selecione pelo menos um audio'); return
     }
 
     const files = [...selectedFiles]
     proc.startProcessing(files)
-    setProcessing(true)
 
-    // Navigate to processing status page immediately
+    // Navigate FIRST, then fire-and-forget the SSE
     onNavigate('processing')
 
-    try {
-      await api.processBatchSSE(volumePath.trim(), selectedCats, files, (event) => {
-        if (event.type === 'status') {
-          proc.updateFile(event.file, { status: 'processing', stage: event.stage, message: event.message })
-        } else if (event.type === 'completed') {
-          proc.updateFile(event.file, { status: 'done', stage: 'done', message: 'Concluido!', result: event.result })
-        } else if (event.type === 'error') {
-          proc.updateFile(event.file, { status: 'error', stage: 'error', message: event.error })
-        } else if (event.type === 'done') {
-          proc.finishProcessing(event)
-          toast.success(`${event.processed} audios processados!`)
-        }
-      })
-    } catch (err) {
-      toast.error(err.message)
-      proc.finishProcessing({ processed: 0, errors: 1 })
-    } finally {
-      setProcessing(false)
-    }
+    // Run SSE in background — NOT awaited, so UI stays free
+    api.processBatchSSE(volumePath.trim(), selectedCats, files, (event) => {
+      if (event.type === 'status') {
+        proc.updateFile(event.file, { status: 'processing', stage: event.stage, message: event.message })
+      } else if (event.type === 'completed') {
+        proc.updateFile(event.file, { status: 'done', stage: 'done', message: 'Concluido!', result: event.result })
+      } else if (event.type === 'error') {
+        proc.updateFile(event.file, { status: 'error', stage: 'error', message: event.error })
+      } else if (event.type === 'done') {
+        proc.finishProcessing(event)
+      }
+    }).catch((err) => {
+      proc.finishProcessing({ processed: 0, errors: files.length })
+    })
   }
 
   const playVolumeAudio = (path) => {
