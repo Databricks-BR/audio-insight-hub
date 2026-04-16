@@ -14,4 +14,8 @@ if [ ! -f "$FFBIN/ffmpeg" ]; then
 fi
 
 export PATH="$FFBIN:$PATH"
-exec uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+# Find uvicorn in the virtualenv or system
+UVICORN=$(which uvicorn 2>/dev/null || find / -name uvicorn -type f 2>/dev/null | head -1)
+echo "Using uvicorn: $UVICORN"
+exec $UVICORN backend.main:app --host 0.0.0.0 --port 8000
