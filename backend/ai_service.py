@@ -38,12 +38,27 @@ def _get_token():
     return ""
 
 
+def _get_model():
+    """Get the configured model name from DB or default."""
+    try:
+        from .database import get_cursor
+        with get_cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = 'llm_model'")
+            row = cur.fetchone()
+            if row:
+                return row["value"]
+    except Exception:
+        pass
+    return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+
+
 def _call_llm(prompt: str, max_tokens: int = 2048, temperature: float = 0.1) -> str:
-    """Call Claude via Databricks FMAPI (text only)."""
+    """Call LLM via Databricks FMAPI (text only)."""
     host = _get_host()
     token = _get_token()
+    model = _get_model()
 
-    url = f"{host}/serving-endpoints/databricks-claude-sonnet-4-6/invocations"
+    url = f"{host}/serving-endpoints/{model}/invocations"
 
     payload = {
         "anthropic_version": "2023-06-01",

@@ -364,6 +364,41 @@ async def delete_analysis(analysis_id: int):
         return {"deleted": True}
 
 
+@app.delete("/api/analyses")
+async def delete_all_analyses():
+    """Delete ALL analyses from the database."""
+    with get_cursor() as cur:
+        cur.execute("DELETE FROM audio_analyses")
+        return {"deleted_all": True}
+
+
+# ---- Available Models ----
+
+@app.get("/api/models")
+async def list_models():
+    """List available FMAPI serving endpoints."""
+    from databricks.sdk import WorkspaceClient
+    try:
+        w = WorkspaceClient()
+        endpoints = list(w.serving_endpoints.list())
+        models = [
+            {"name": e.name, "state": e.state.ready.value if e.state and e.state.ready else "UNKNOWN"}
+            for e in endpoints
+            if e.name and ("claude" in e.name.lower() or "gpt" in e.name.lower()
+                           or "llama" in e.name.lower() or "qwen" in e.name.lower()
+                           or "gemma" in e.name.lower())
+        ]
+        return sorted(models, key=lambda m: m["name"])
+    except Exception as e:
+        return [
+            {"name": "databricks-claude-sonnet-4-6", "state": "READY"},
+            {"name": "databricks-claude-sonnet-4-5", "state": "READY"},
+            {"name": "databricks-claude-haiku-4-5", "state": "READY"},
+            {"name": "databricks-gpt-5-4", "state": "READY"},
+            {"name": "databricks-gpt-5-4-mini", "state": "READY"},
+        ]
+
+
 # ---- Dashboard Stats ----
 
 @app.get("/api/dashboard/stats")

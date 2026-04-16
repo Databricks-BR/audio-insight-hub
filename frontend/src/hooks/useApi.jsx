@@ -57,14 +57,19 @@ export function useApi() {
   };
   const fetchAnalysis = (id) => apiFetch(`/analyses/${id}`);
   const deleteAnalysis = (id) => apiFetch(`/analyses/${id}`, { method: 'DELETE' });
+  const deleteAllAnalyses = () => apiFetch('/analyses', { method: 'DELETE' });
 
   const exportPdf = (id) => apiFetch(`/export/pdf/${id}`);
   const exportAllPdf = () => apiFetch('/export/pdf/all');
 
+  const fetchModels = () => apiFetch('/models');
+  const fetchSettings = () => apiFetch('/settings');
+  const updateSetting = (key, value) => apiFetch('/settings', { method: 'PUT', body: JSON.stringify({ key, value }) });
+
   return {
     fetchStats, fetchCategories, createCategory, updateCategory, deleteCategory,
     uploadAudio, listVolumeFiles, processBatch, getAudioStreamUrl,
-    fetchAnalyses, fetchAnalysis, deleteAnalysis,
-    exportPdf, exportAllPdf,
+    fetchAnalyses, fetchAnalysis, deleteAnalysis, deleteAllAnalyses,
+    exportPdf, exportAllPdf, fetchModels, fetchSettings, updateSetting,
   };
 }
