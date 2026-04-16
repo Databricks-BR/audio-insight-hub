@@ -6,6 +6,11 @@ import httpx
 import speech_recognition as sr
 import miniaudio
 
+# Ensure ffmpeg binary is in PATH (downloaded by start.sh to /tmp/ffmpeg-bin)
+_ffbin = "/tmp/ffmpeg-bin"
+if os.path.isdir(_ffbin) and _ffbin not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _ffbin + ":" + os.environ.get("PATH", "")
+
 
 def _get_host():
     host = os.environ.get("DATABRICKS_HOST", "")
