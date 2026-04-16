@@ -33,6 +33,8 @@ def _get_credentials():
     if client_id and client_secret and host:
         # Get OAuth token via client credentials flow
         try:
+            if not host.startswith("http"):
+                host = f"https://{host}"
             token_url = f"{host.rstrip('/')}/oidc/v1/token"
             resp = httpx.post(
                 token_url,

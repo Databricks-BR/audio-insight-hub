@@ -61,6 +61,14 @@ class BatchRequest(BaseModel):
 
 # ---- Health ----
 
+@app.get("/api/debug/env")
+async def debug_env():
+    """Temporary: check which DATABRICKS env vars are available."""
+    import os
+    keys = [k for k in os.environ if k.startswith("DATABRICKS")]
+    return {k: ("***" if "SECRET" in k or "TOKEN" in k or "PASSWORD" in k else os.environ[k]) for k in sorted(keys)}
+
+
 @app.get("/api/health")
 async def health():
     db_ok = False

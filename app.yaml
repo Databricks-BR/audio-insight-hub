@@ -11,6 +11,10 @@ env:
     value: "ep-sparkling-truth-d2q43hj7.database.us-east-1.cloud.databricks.com"
   - name: DATABRICKS_LAKEBASE_DB
     value: "audio_insight_hub"
+  - name: DATABRICKS_LAKEBASE_USER
+    value: "app_user"
+  - name: DATABRICKS_LAKEBASE_PASSWORD
+    value: "AudioHub2026!secure"
 
 resources:
   - name: audio-insight-serving-endpoint

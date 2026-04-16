@@ -5,10 +5,44 @@ import httpx
 from openai import OpenAI
 
 
+def _get_host():
+    host = os.environ.get("DATABRICKS_HOST", "")
+    if host and not host.startswith("http"):
+        host = f"https://{host}"
+    return host
+
+
+def _get_token():
+    """Get an access token, handling both PAT and OAuth M2M."""
+    token = os.environ.get("DATABRICKS_TOKEN", "")
+    if token:
+        return token
+
+    # OAuth M2M flow for Databricks Apps
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
+    host = _get_host()
+
+    if client_id and client_secret and host:
+        try:
+            resp = httpx.post(
+                f"{host}/oidc/v1/token",
+                data={"grant_type": "client_credentials", "scope": "all-apis"},
+                auth=(client_id, client_secret),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()["access_token"]
+        except Exception as e:
+            print(f"OAuth token error: {e}")
+
+    return ""
+
+
 def get_openai_client():
     """Get OpenAI-compatible client pointing to Databricks Foundation Model API."""
-    host = os.environ.get("DATABRICKS_HOST", "")
-    token = os.environ.get("DATABRICKS_TOKEN", "")
+    host = _get_host()
+    token = _get_token()
     return OpenAI(
         api_key=token,
         base_url=f"{host}/serving-endpoints",
@@ -16,21 +50,11 @@ def get_openai_client():
 
 
 def transcribe_audio(audio_bytes: bytes, file_name: str) -> dict:
-    """Transcribe audio using Databricks Foundation Model API (Whisper)."""
-    host = os.environ.get("DATABRICKS_HOST", "")
-    token = os.environ.get("DATABRICKS_TOKEN", "")
-
+    """Transcribe audio using Databricks Foundation Model API (Claude)."""
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # Determine MIME type
     ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "wav"
-    mime_map = {
-        "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
-        "flac": "audio/flac", "m4a": "audio/mp4", "webm": "audio/webm",
-    }
-    mime_type = mime_map.get(ext, "audio/wav")
 
-    # Use Claude with audio input for transcription
     client = get_openai_client()
     response = client.chat.completions.create(
         model="databricks-claude-sonnet-4",
@@ -97,7 +121,6 @@ Respond ONLY with a valid JSON object (no markdown, no code blocks) with these e
     )
 
     text = response.choices[0].message.content.strip()
-    # Try to parse JSON, handle potential markdown wrapping
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(text)
