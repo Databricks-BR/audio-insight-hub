@@ -2,14 +2,6 @@
 
 A full-stack Databricks App for AI-powered audio transcription, sentiment analysis, and categorization — backed by **Lakebase** (managed PostgreSQL).
 
-## Why "Audio Insight Hub"?
-
-The name reflects the core purpose of the platform:
-
-- **Audio** — The primary input. The app processes voice recordings, call center audio, interviews, and any spoken content.
-- **Insight** — AI extracts structured intelligence: sentiment, urgency, topics, action items, and speaker analysis from unstructured audio.
-- **Hub** — A centralized platform. Upload, transcribe, analyze, review, and export — all from a single interface.
-
 ## Overview
 
 Audio Insight Hub converts audio files into actionable intelligence. It transcribes audio using Gemini 2.5 Flash, then analyzes the transcription with Claude Sonnet (via Databricks FMAPI) to extract sentiment, categories, key topics, urgency levels, and action items.
